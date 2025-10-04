@@ -1,12 +1,15 @@
 {
-  "name": "smartlead-analytics-dashboard",
-  "version": "1.0.0",
+  "name": "lovenotfear-outbound-metrics",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "dependencies": {
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.263.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "lucide-react": "^0.263.1"
+    "react-hot-toast": "^2.6.0",
+    "recharts": "^3.2.1"
   },
   "scripts": {
     "dev": "vite",
