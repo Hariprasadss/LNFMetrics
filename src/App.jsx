@@ -2,14 +2,29 @@ import React, { useState, useEffect } from 'react';
 import { 
   Users, Mail, Reply, UserX, Download, Plus, Trash2, TrendingUp, 
   CheckCircle, Clock, AlertCircle, RefreshCw, Moon, Sun, 
-  ArrowUp, ArrowDown, Minus, Search, Target, Heart
+  ArrowUp, ArrowDown, Minus, Search, Target, Heart, Calendar, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import {
   BarChart, Bar, PieChart as RechartsPie, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  Area, AreaChart
+  Area, AreaChart, LineChart, Line, ComposedChart
 } from 'recharts';
-import { format } from 'date-fns';
+import { 
+  format, 
+  startOfWeek, 
+  endOfWeek, 
+  addWeeks, 
+  subWeeks, 
+  startOfMonth, 
+  endOfMonth,
+  isWithinInterval,
+  parseISO,
+  differenceInDays,
+  eachWeekOfInterval,
+  addDays,
+  isSameWeek,
+  startOfDay
+} from 'date-fns';
 import toast, { Toaster } from 'react-hot-toast';
 
 export default function LoveNotFearOutboundMetrics() {
@@ -30,8 +45,132 @@ export default function LoveNotFearOutboundMetrics() {
   const [searchTerm, setSearchTerm] = useState('');
   const [historicalData, setHistoricalData] = useState({});
   const [showCampaignSelector, setShowCampaignSelector] = useState(false);
+  
+  // Date filtering states
+  const [dateFilterType, setDateFilterType] = useState('all'); // 'all', 'current-week', 'past-week', 'custom', 'month'
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+  const [selectedWeekOffset, setSelectedWeekOffset] = useState(0); // 0 = current week, -1 = last week, etc.
 
   const COLORS = ['#8b5cf6', '#ec4899', '#06b6d4', '#10b981', '#f59e0b', '#ef4444'];
+
+  // Helper function to get Monday-to-Sunday week boundaries
+  const getWeekBoundaries = (offset = 0) => {
+    const today = new Date();
+    const weekStart = startOfWeek(addWeeks(today, offset), { weekStartsOn: 1 }); // 1 = Monday
+    const weekEnd = endOfWeek(addWeeks(today, offset), { weekStartsOn: 1 });
+    return { weekStart, weekEnd };
+  };
+
+  // Get current date range based on filter type
+  const getDateRange = () => {
+    const today = new Date();
+    
+    switch (dateFilterType) {
+      case 'current-week': {
+        const { weekStart, weekEnd } = getWeekBoundaries(0);
+        return { start: weekStart, end: weekEnd };
+      }
+      case 'past-week': {
+        const { weekStart, weekEnd } = getWeekBoundaries(-1);
+        return { start: weekStart, end: weekEnd };
+      }
+      case 'week-selector': {
+        const { weekStart, weekEnd } = getWeekBoundaries(selectedWeekOffset);
+        return { start: weekStart, end: weekEnd };
+      }
+      case 'month': {
+        return { start: startOfMonth(today), end: endOfMonth(today) };
+      }
+      case 'custom': {
+        if (customStartDate && customEndDate) {
+          return { 
+            start: startOfDay(new Date(customStartDate)), 
+            end: startOfDay(new Date(customEndDate)) 
+          };
+        }
+        return null;
+      }
+      default:
+        return null;
+    }
+  };
+
+  // Filter historical data based on date range
+  const filterDataByDateRange = (data) => {
+    const dateRange = getDateRange();
+    if (!dateRange) return data;
+
+    return data.filter(entry => {
+      const entryDate = new Date(entry.timestamp);
+      return isWithinInterval(entryDate, { start: dateRange.start, end: dateRange.end });
+    });
+  };
+
+  // Get week-over-week comparison data
+  const getWeekOverWeekComparison = () => {
+    const weeks = [];
+    const today = new Date();
+    
+    // Get last 8 weeks of data (Monday to Sunday)
+    for (let i = 7; i >= 0; i--) {
+      const { weekStart, weekEnd } = getWeekBoundaries(-i);
+      
+      const weekData = {
+        weekLabel: `${format(weekStart, 'MMM dd')} - ${format(weekEnd, 'MMM dd')}`,
+        weekStart,
+        weekEnd,
+        emails: 0,
+        replies: 0,
+        interested: 0,
+        bounced: 0,
+        replyRate: 0,
+        conversionRate: 0
+      };
+
+      // Aggregate data from all campaigns for this week
+      Object.values(historicalData).forEach(campaignHistory => {
+        campaignHistory.forEach(entry => {
+          const entryDate = new Date(entry.timestamp);
+          if (isWithinInterval(entryDate, { start: weekStart, end: weekEnd })) {
+            weekData.emails += parseInt(entry.sent_count || 0);
+            weekData.replies += parseInt(entry.reply_count || 0);
+            weekData.interested += parseInt(entry.campaign_lead_stats?.interested || 0);
+            weekData.bounced += parseInt(entry.bounce_count || 0);
+          }
+        });
+      });
+
+      weekData.replyRate = weekData.emails > 0 ? ((weekData.replies / weekData.emails) * 100).toFixed(2) : 0;
+      weekData.conversionRate = weekData.replies > 0 ? ((weekData.interested / weekData.replies) * 100).toFixed(2) : 0;
+      
+      weeks.push(weekData);
+    }
+
+    return weeks;
+  };
+
+  // Calculate week-over-week change percentage
+  const calculateWeekOverWeekChange = (metric) => {
+    const weeks = getWeekOverWeekComparison();
+    if (weeks.length < 2) return null;
+
+    const currentWeek = weeks[weeks.length - 1];
+    const previousWeek = weeks[weeks.length - 2];
+
+    const currentValue = parseFloat(currentWeek[metric]) || 0;
+    const previousValue = parseFloat(previousWeek[metric]) || 0;
+
+    if (previousValue === 0) return null;
+
+    const change = ((currentValue - previousValue) / previousValue) * 100;
+    return {
+      change: change.toFixed(1),
+      direction: change > 0 ? 'up' : change < 0 ? 'down' : 'same',
+      current: currentValue,
+      previous: previousValue
+    };
+  };
 
   useEffect(() => {
     const cached = localStorage.getItem('campaignData');
@@ -368,6 +507,10 @@ export default function LoveNotFearOutboundMetrics() {
       { name: 'Not Started', value: consolidated.not_started, color: COLORS[2] },
     ].filter(item => item.value > 0);
 
+    // Get week-over-week trend data
+    const weeklyTrendData = getWeekOverWeekComparison();
+
+    // Get historical trend based on date filter
     const getHistoricalTrend = () => {
       const allHistory = Object.values(historicalData).flat();
       if (allHistory.length === 0) return [];
@@ -376,10 +519,11 @@ export default function LoveNotFearOutboundMetrics() {
       allHistory.forEach(entry => {
         const date = format(new Date(entry.timestamp), 'MMM dd');
         if (!grouped[date]) {
-          grouped[date] = { date, emails: 0, replies: 0 };
+          grouped[date] = { date, emails: 0, replies: 0, interested: 0 };
         }
         grouped[date].emails += parseInt(entry.sent_count || 0);
         grouped[date].replies += parseInt(entry.reply_count || 0);
+        grouped[date].interested += parseInt(entry.campaign_lead_stats?.interested || 0);
       });
       
       return Object.values(grouped).slice(-10);
@@ -389,34 +533,68 @@ export default function LoveNotFearOutboundMetrics() {
 
     return (
       <div className="space-y-6 mt-8">
-        <div className={`${
-          theme === 'dark' ? 'bg-white/10 border-white/20' : 'bg-white border-gray-200'
-        } backdrop-blur-lg rounded-2xl border shadow-2xl p-6`}>
-          <h3 className={`${theme === 'dark' ? 'text-white' : 'text-gray-900'} text-lg font-semibold mb-4`}>
-            Campaign Performance Comparison
-          </h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={campaignComparison}>
-              <CartesianGrid strokeDasharray="3 3" stroke={theme === 'dark' ? '#374151' : '#e5e7eb'} />
-              <XAxis dataKey="name" stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} />
-              <YAxis stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} />
-              <Tooltip 
-                contentStyle={{ 
-                  backgroundColor: theme === 'dark' ? '#1f2937' : '#ffffff',
-                  border: `1px solid ${theme === 'dark' ? '#374151' : '#e5e7eb'}`,
-                  borderRadius: '8px'
-                }}
-              />
-              <Legend />
-              <Bar dataKey="emails" fill="#8b5cf6" name="Emails Sent" />
-              <Bar dataKey="replies" fill="#10b981" name="Replies" />
-              <Bar dataKey="interested" fill="#06b6d4" name="Interested" />
-              <Bar dataKey="bounced" fill="#ef4444" name="Bounced" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+        {/* Week-over-Week Comparison Chart */}
+        {weeklyTrendData.length > 0 && (
+          <div className={`${
+            theme === 'dark' ? 'bg-white/10 border-white/20' : 'bg-white border-gray-200'
+          } backdrop-blur-lg rounded-2xl border shadow-2xl p-6`}>
+            <h3 className={`${theme === 'dark' ? 'text-white' : 'text-gray-900'} text-lg font-semibold mb-4 flex items-center gap-2`}>
+              <TrendingUp className="text-purple-400" />
+              Week-over-Week Performance Trends (Monday - Sunday)
+            </h3>
+            <ResponsiveContainer width="100%" height={350}>
+              <ComposedChart data={weeklyTrendData}>
+                <CartesianGrid strokeDasharray="3 3" stroke={theme === 'dark' ? '#374151' : '#e5e7eb'} />
+                <XAxis dataKey="weekLabel" stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} angle={-45} textAnchor="end" height={100} />
+                <YAxis yAxisId="left" stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} />
+                <YAxis yAxisId="right" orientation="right" stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} />
+                <Tooltip 
+                  contentStyle={{ 
+                    backgroundColor: theme === 'dark' ? '#1f2937' : '#ffffff',
+                    border: `1px solid ${theme === 'dark' ? '#374151' : '#e5e7eb'}`,
+                    borderRadius: '8px'
+                  }}
+                />
+                <Legend />
+                <Bar yAxisId="left" dataKey="emails" fill="#8b5cf6" name="Emails Sent" />
+                <Bar yAxisId="left" dataKey="replies" fill="#10b981" name="Replies" />
+                <Bar yAxisId="left" dataKey="interested" fill="#06b6d4" name="Interested" />
+                <Line yAxisId="right" type="monotone" dataKey="replyRate" stroke="#f59e0b" strokeWidth={2} name="Reply Rate %" />
+                <Line yAxisId="right" type="monotone" dataKey="conversionRate" stroke="#ec4899" strokeWidth={2} name="Conversion %" />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Campaign Performance Comparison */}
+          <div className={`${
+            theme === 'dark' ? 'bg-white/10 border-white/20' : 'bg-white border-gray-200'
+          } backdrop-blur-lg rounded-2xl border shadow-2xl p-6`}>
+            <h3 className={`${theme === 'dark' ? 'text-white' : 'text-gray-900'} text-lg font-semibold mb-4`}>
+              Campaign Performance Comparison
+            </h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={campaignComparison}>
+                <CartesianGrid strokeDasharray="3 3" stroke={theme === 'dark' ? '#374151' : '#e5e7eb'} />
+                <XAxis dataKey="name" stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} />
+                <YAxis stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} />
+                <Tooltip 
+                  contentStyle={{ 
+                    backgroundColor: theme === 'dark' ? '#1f2937' : '#ffffff',
+                    border: `1px solid ${theme === 'dark' ? '#374151' : '#e5e7eb'}`,
+                    borderRadius: '8px'
+                  }}
+                />
+                <Legend />
+                <Bar dataKey="emails" fill="#8b5cf6" name="Emails Sent" />
+                <Bar dataKey="replies" fill="#10b981" name="Replies" />
+                <Bar dataKey="interested" fill="#06b6d4" name="Interested" />
+                <Bar dataKey="bounced" fill="#ef4444" name="Bounced" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
           {leadStatusData.length > 0 && (
             <div className={`${
               theme === 'dark' ? 'bg-white/10 border-white/20' : 'bg-white border-gray-200'
@@ -445,27 +623,29 @@ export default function LoveNotFearOutboundMetrics() {
               </ResponsiveContainer>
             </div>
           )}
-
-          {trendData.length > 0 && (
-            <div className={`${
-              theme === 'dark' ? 'bg-white/10 border-white/20' : 'bg-white border-gray-200'
-            } backdrop-blur-lg rounded-2xl border shadow-2xl p-6`}>
-              <h3 className={`${theme === 'dark' ? 'text-white' : 'text-gray-900'} text-lg font-semibold mb-4`}>
-                Historical Trend
-              </h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={trendData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={theme === 'dark' ? '#374151' : '#e5e7eb'} />
-                  <XAxis dataKey="date" stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} />
-                  <YAxis stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} />
-                  <Tooltip />
-                  <Area type="monotone" dataKey="emails" stroke="#8b5cf6" fill="#8b5cf6" fillOpacity={0.3} name="Emails" />
-                  <Area type="monotone" dataKey="replies" stroke="#10b981" fill="#10b981" fillOpacity={0.3} name="Replies" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          )}
         </div>
+
+        {trendData.length > 0 && (
+          <div className={`${
+            theme === 'dark' ? 'bg-white/10 border-white/20' : 'bg-white border-gray-200'
+          } backdrop-blur-lg rounded-2xl border shadow-2xl p-6`}>
+            <h3 className={`${theme === 'dark' ? 'text-white' : 'text-gray-900'} text-lg font-semibold mb-4`}>
+              Recent Activity Trend
+            </h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <AreaChart data={trendData}>
+                <CartesianGrid strokeDasharray="3 3" stroke={theme === 'dark' ? '#374151' : '#e5e7eb'} />
+                <XAxis dataKey="date" stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} />
+                <YAxis stroke={theme === 'dark' ? '#9ca3af' : '#6b7280'} />
+                <Tooltip />
+                <Legend />
+                <Area type="monotone" dataKey="emails" stroke="#8b5cf6" fill="#8b5cf6" fillOpacity={0.3} name="Emails" />
+                <Area type="monotone" dataKey="replies" stroke="#10b981" fill="#10b981" fillOpacity={0.3} name="Replies" />
+                <Area type="monotone" dataKey="interested" stroke="#06b6d4" fill="#06b6d4" fillOpacity={0.3} name="Interested" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </div>
     );
   };
@@ -480,17 +660,100 @@ export default function LoveNotFearOutboundMetrics() {
         campaign_lead_stats: { interested: consolidated.interested }
       });
 
+      // Get week-over-week changes for consolidated view
+      const emailsChange = calculateWeekOverWeekChange('emails');
+      const repliesChange = calculateWeekOverWeekChange('replies');
+      const interestedChange = calculateWeekOverWeekChange('interested');
+
       return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
-          <MetricCard icon={Users} label="Unique Leads Contacted" value={consolidated.unique_leads} color="blue" />
-          <MetricCard icon={Mail} label="Total Emails Sent" value={consolidated.total_emails} color="purple" />
-          <MetricCard icon={Reply} label="Total Replies" value={consolidated.total_replies} color="green" percentage={metrics.replyRate} />
-          <MetricCard icon={CheckCircle} label="Positive Replies" value={consolidated.interested} color="emerald" percentage={metrics.conversionRate} />
-          <MetricCard icon={UserX} label="Bounced" value={consolidated.bounced} color="red" percentage={metrics.bounceRate} />
-          <MetricCard icon={AlertCircle} label="Unsubscribed" value={consolidated.unsubscribed} color="orange" />
-          <MetricCard icon={TrendingUp} label="In Progress" value={consolidated.in_progress} color="pink" />
-          <MetricCard icon={Clock} label="Not Started" value={consolidated.not_started} color="slate" />
-        </div>
+        <>
+          {Object.keys(historicalData).length > 0 && (
+            <div className={`mb-6 ${
+              theme === 'dark' ? 'bg-gradient-to-r from-purple-500/20 to-pink-500/20 border-purple-500/50' : 'bg-gradient-to-r from-purple-100 to-pink-100 border-purple-300'
+            } backdrop-blur-lg rounded-2xl border shadow-2xl p-6`}>
+              <h3 className={`${theme === 'dark' ? 'text-white' : 'text-gray-900'} text-lg font-semibold mb-4 flex items-center gap-2`}>
+                <TrendingUp className="text-purple-400" />
+                Week-over-Week Performance Summary
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {emailsChange && (
+                  <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-white/10' : 'bg-white'}`}>
+                    <p className={`text-sm ${theme === 'dark' ? 'text-slate-400' : 'text-gray-600'} mb-1`}>Emails Sent</p>
+                    <div className="flex items-center justify-between">
+                      <p className={`text-2xl font-bold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+                        {emailsChange.current.toLocaleString()}
+                      </p>
+                      <div className={`flex items-center gap-1 font-semibold ${
+                        emailsChange.direction === 'up' ? 'text-green-400' : 
+                        emailsChange.direction === 'down' ? 'text-red-400' : 'text-gray-400'
+                      }`}>
+                        {emailsChange.direction === 'up' && <ArrowUp size={18} />}
+                        {emailsChange.direction === 'down' && <ArrowDown size={18} />}
+                        {emailsChange.change}%
+                      </div>
+                    </div>
+                    <p className={`text-xs ${theme === 'dark' ? 'text-slate-500' : 'text-gray-500'} mt-1`}>
+                      vs last week: {emailsChange.previous.toLocaleString()}
+                    </p>
+                  </div>
+                )}
+                {repliesChange && (
+                  <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-white/10' : 'bg-white'}`}>
+                    <p className={`text-sm ${theme === 'dark' ? 'text-slate-400' : 'text-gray-600'} mb-1`}>Total Replies</p>
+                    <div className="flex items-center justify-between">
+                      <p className={`text-2xl font-bold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+                        {repliesChange.current.toLocaleString()}
+                      </p>
+                      <div className={`flex items-center gap-1 font-semibold ${
+                        repliesChange.direction === 'up' ? 'text-green-400' : 
+                        repliesChange.direction === 'down' ? 'text-red-400' : 'text-gray-400'
+                      }`}>
+                        {repliesChange.direction === 'up' && <ArrowUp size={18} />}
+                        {repliesChange.direction === 'down' && <ArrowDown size={18} />}
+                        {repliesChange.change}%
+                      </div>
+                    </div>
+                    <p className={`text-xs ${theme === 'dark' ? 'text-slate-500' : 'text-gray-500'} mt-1`}>
+                      vs last week: {repliesChange.previous.toLocaleString()}
+                    </p>
+                  </div>
+                )}
+                {interestedChange && (
+                  <div className={`p-4 rounded-lg ${theme === 'dark' ? 'bg-white/10' : 'bg-white'}`}>
+                    <p className={`text-sm ${theme === 'dark' ? 'text-slate-400' : 'text-gray-600'} mb-1`}>Interested Leads</p>
+                    <div className="flex items-center justify-between">
+                      <p className={`text-2xl font-bold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+                        {interestedChange.current.toLocaleString()}
+                      </p>
+                      <div className={`flex items-center gap-1 font-semibold ${
+                        interestedChange.direction === 'up' ? 'text-green-400' : 
+                        interestedChange.direction === 'down' ? 'text-red-400' : 'text-gray-400'
+                      }`}>
+                        {interestedChange.direction === 'up' && <ArrowUp size={18} />}
+                        {interestedChange.direction === 'down' && <ArrowDown size={18} />}
+                        {interestedChange.change}%
+                      </div>
+                    </div>
+                    <p className={`text-xs ${theme === 'dark' ? 'text-slate-500' : 'text-gray-500'} mt-1`}>
+                      vs last week: {interestedChange.previous.toLocaleString()}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+            <MetricCard icon={Users} label="Unique Leads Contacted" value={consolidated.unique_leads} color="blue" />
+            <MetricCard icon={Mail} label="Total Emails Sent" value={consolidated.total_emails} color="purple" />
+            <MetricCard icon={Reply} label="Total Replies" value={consolidated.total_replies} color="green" percentage={metrics.replyRate} />
+            <MetricCard icon={CheckCircle} label="Positive Replies" value={consolidated.interested} color="emerald" percentage={metrics.conversionRate} />
+            <MetricCard icon={UserX} label="Bounced" value={consolidated.bounced} color="red" percentage={metrics.bounceRate} />
+            <MetricCard icon={AlertCircle} label="Unsubscribed" value={consolidated.unsubscribed} color="orange" />
+            <MetricCard icon={TrendingUp} label="In Progress" value={consolidated.in_progress} color="pink" />
+            <MetricCard icon={Clock} label="Not Started" value={consolidated.not_started} color="slate" />
+          </div>
+        </>
       );
     } else {
       return Object.entries(campaignData)
@@ -919,6 +1182,196 @@ export default function LoveNotFearOutboundMetrics() {
                 />
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Date Filter Section */}
+      {!loading && Object.keys(campaignData).length > 0 && (
+        <div className={`mb-6 ${
+          theme === 'dark' ? 'bg-white/10 border-white/20' : 'bg-white border-gray-200'
+        } backdrop-blur-lg rounded-2xl border shadow-2xl p-6`}>
+          <div className="flex items-center gap-2 mb-4">
+            <Calendar className="text-purple-400" size={20} />
+            <h3 className={`${theme === 'dark' ? 'text-white' : 'text-gray-900'} text-lg font-semibold`}>
+              Date Range Filter
+            </h3>
+          </div>
+          
+          <div className="space-y-4">
+            {/* Quick Filter Buttons */}
+            <div className="flex gap-2 flex-wrap">
+              <button 
+                onClick={() => setDateFilterType('all')}
+                className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                  dateFilterType === 'all'
+                    ? 'bg-purple-500 text-white' 
+                    : theme === 'dark'
+                      ? 'bg-white/5 border border-white/20 text-white hover:bg-white/10'
+                      : 'bg-gray-100 border border-gray-300 text-gray-900 hover:bg-gray-200'
+                }`}
+              >
+                All Time
+              </button>
+              <button 
+                onClick={() => setDateFilterType('current-week')}
+                className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                  dateFilterType === 'current-week'
+                    ? 'bg-green-500 text-white' 
+                    : theme === 'dark'
+                      ? 'bg-white/5 border border-white/20 text-white hover:bg-white/10'
+                      : 'bg-gray-100 border border-gray-300 text-gray-900 hover:bg-gray-200'
+                }`}
+              >
+                Current Week
+              </button>
+              <button 
+                onClick={() => setDateFilterType('past-week')}
+                className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                  dateFilterType === 'past-week'
+                    ? 'bg-blue-500 text-white' 
+                    : theme === 'dark'
+                      ? 'bg-white/5 border border-white/20 text-white hover:bg-white/10'
+                      : 'bg-gray-100 border border-gray-300 text-gray-900 hover:bg-gray-200'
+                }`}
+              >
+                Past Week
+              </button>
+              <button 
+                onClick={() => setDateFilterType('month')}
+                className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                  dateFilterType === 'month'
+                    ? 'bg-cyan-500 text-white' 
+                    : theme === 'dark'
+                      ? 'bg-white/5 border border-white/20 text-white hover:bg-white/10'
+                      : 'bg-gray-100 border border-gray-300 text-gray-900 hover:bg-gray-200'
+                }`}
+              >
+                This Month
+              </button>
+              <button 
+                onClick={() => setDateFilterType('week-selector')}
+                className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                  dateFilterType === 'week-selector'
+                    ? 'bg-pink-500 text-white' 
+                    : theme === 'dark'
+                      ? 'bg-white/5 border border-white/20 text-white hover:bg-white/10'
+                      : 'bg-gray-100 border border-gray-300 text-gray-900 hover:bg-gray-200'
+                }`}
+              >
+                Week Selector
+              </button>
+              <button 
+                onClick={() => setDateFilterType('custom')}
+                className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                  dateFilterType === 'custom'
+                    ? 'bg-orange-500 text-white' 
+                    : theme === 'dark'
+                      ? 'bg-white/5 border border-white/20 text-white hover:bg-white/10'
+                      : 'bg-gray-100 border border-gray-300 text-gray-900 hover:bg-gray-200'
+                }`}
+              >
+                Custom Range
+              </button>
+            </div>
+
+            {/* Week Selector Navigation */}
+            {dateFilterType === 'week-selector' && (
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => setSelectedWeekOffset(selectedWeekOffset - 1)}
+                  className={`p-2 rounded-lg ${
+                    theme === 'dark' ? 'bg-white/5 hover:bg-white/10' : 'bg-gray-100 hover:bg-gray-200'
+                  } transition-all`}
+                >
+                  <ChevronLeft size={20} />
+                </button>
+                
+                <div className={`flex-1 text-center ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+                  {(() => {
+                    const { weekStart, weekEnd } = getWeekBoundaries(selectedWeekOffset);
+                    return (
+                      <div>
+                        <p className="font-semibold">
+                          {selectedWeekOffset === 0 && 'This Week: '}
+                          {selectedWeekOffset === -1 && 'Last Week: '}
+                          {selectedWeekOffset < -1 && `${Math.abs(selectedWeekOffset)} Weeks Ago: `}
+                          {selectedWeekOffset > 0 && `${selectedWeekOffset} Week${selectedWeekOffset > 1 ? 's' : ''} Ahead: `}
+                        </p>
+                        <p className={`text-sm ${theme === 'dark' ? 'text-slate-400' : 'text-gray-600'}`}>
+                          {format(weekStart, 'MMMM dd, yyyy')} - {format(weekEnd, 'MMMM dd, yyyy')}
+                        </p>
+                      </div>
+                    );
+                  })()}
+                </div>
+                
+                <button
+                  onClick={() => setSelectedWeekOffset(selectedWeekOffset + 1)}
+                  disabled={selectedWeekOffset >= 0}
+                  className={`p-2 rounded-lg ${
+                    selectedWeekOffset >= 0 
+                      ? 'opacity-30 cursor-not-allowed' 
+                      : theme === 'dark' 
+                        ? 'bg-white/5 hover:bg-white/10' 
+                        : 'bg-gray-100 hover:bg-gray-200'
+                  } transition-all`}
+                >
+                  <ChevronRight size={20} />
+                </button>
+              </div>
+            )}
+
+            {/* Custom Date Range Inputs */}
+            {dateFilterType === 'custom' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${
+                    theme === 'dark' ? 'text-slate-400' : 'text-gray-600'
+                  }`}>
+                    Start Date
+                  </label>
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    className={`w-full px-4 py-2 ${
+                      theme === 'dark' ? 'bg-white/5 border-white/20 text-white' : 'bg-gray-50 border-gray-300 text-gray-900'
+                    } border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500`}
+                  />
+                </div>
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${
+                    theme === 'dark' ? 'text-slate-400' : 'text-gray-600'
+                  }`}>
+                    End Date
+                  </label>
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                    className={`w-full px-4 py-2 ${
+                      theme === 'dark' ? 'bg-white/5 border-white/20 text-white' : 'bg-gray-50 border-gray-300 text-gray-900'
+                    } border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500`}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Active Date Range Display */}
+            {dateFilterType !== 'all' && (
+              <div className={`p-4 rounded-lg ${
+                theme === 'dark' ? 'bg-purple-500/20 border-purple-500/50' : 'bg-purple-100 border-purple-300'
+              } border`}>
+                <p className={`text-sm ${theme === 'dark' ? 'text-purple-300' : 'text-purple-900'}`}>
+                  <strong>Active Filter:</strong> {(() => {
+                    const range = getDateRange();
+                    if (!range) return 'Please select valid dates';
+                    return `${format(range.start, 'MMM dd, yyyy')} - ${format(range.end, 'MMM dd, yyyy')} (Monday - Sunday)`;
+                  })()}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
